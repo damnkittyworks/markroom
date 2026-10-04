@@ -1,0 +1,3 @@
+# Installation metadata is retained locally, but omitted from source release archives.
+.openai export-ignore
+*.pdf binary

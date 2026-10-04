@@ -1,0 +1,9 @@
+{
+  "drizzle-orm-0.45.2-LICENSE.txt": "https://raw.githubusercontent.com/drizzle-team/drizzle-orm/0.45.2/LICENSE",
+  "vite-plugin-rsc-0.5.29-LICENSE.txt": "https://raw.githubusercontent.com/vitejs/vite-plugin-react/a80215eeb8cf00b44b3753c60cb03808c18c5b5a/LICENSE",
+  "tailwindcss-4.1.18-LICENSE.txt": "https://raw.githubusercontent.com/tailwindlabs/tailwindcss/v4.1.18/LICENSE",
+  "tailwindcss-4.2.1-LICENSE.txt": "https://registry.npmjs.org/tailwindcss/-/tailwindcss-4.2.1.tgz",
+  "rolldown-1.0.3-LICENSE.txt": "https://registry.npmjs.org/rolldown/-/rolldown-1.0.3.tgz",
+  "rolldown-1.0.3-THIRD-PARTY-LICENSE.txt": "https://raw.githubusercontent.com/rolldown/rolldown/v1.0.3/THIRD-PARTY-LICENSE",
+  "babel-helpers-7.29.2-LICENSE.txt": "https://raw.githubusercontent.com/babel/babel/v7.29.2/packages/babel-helpers/LICENSE"
+}
