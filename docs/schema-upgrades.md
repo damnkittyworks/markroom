@@ -48,8 +48,19 @@ reset the counter without reconciling it against stored annotation bytes.
 
 ## Sites installations
 
-Sites accepts schema-only hosted migrations. Builds with `MARKROOM_SITES=1`
-package the separate `drizzle-sites` migration profile. Its historical
+Sites accepts schema-only hosted migrations. In the separate Sites source
+checkout, with its existing `.openai/hosting.json`, run:
+
+```sh
+node scripts/select-sites-profile.mjs
+```
+
+This preserves standalone migrations in `drizzle-standalone` and selects the
+`drizzle-sites` profile as the root `drizzle` directory used by the native Sites
+packager. Do this before building with `MARKROOM_SITES=1`. The build rejects a
+mixed profile, and rerunning the selector is safe on an unchanged checkout.
+Do not overlay standalone migrations into that selected checkout later.
+Its historical
 0000–0002 SQL, snapshots, and journal entries match the original Site exactly;
 later Sites migration tags differ from the standalone D1 lineage. Do not switch
 a running installation between these migration profiles or rewrite applied SQL.

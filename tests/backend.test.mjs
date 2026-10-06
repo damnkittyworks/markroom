@@ -3,6 +3,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import ts from 'typescript';
+import { standaloneMigrations } from '../scripts/migration-paths.mjs';
 
 // Compile only pure backend helpers in memory; tests never load Workers bindings.
 async function helper(name) {
@@ -15,7 +16,7 @@ const { inspectPdfStream, readJsonObject } = await helper('request-validation');
 const { INSERT_ANNOTATION_SQL, UPDATE_ANNOTATION_SQL, INSERT_PARTICIPANT_SQL } = await helper('review-write-sql');
 const { participantNameKey, participantAuthorLabel } = await helper('participant-label');
 const { protectedThreadIds } = await helper('thread-deletion');
-const migrationDir = new URL('../drizzle/', import.meta.url);
+const migrationDir = standaloneMigrations;
 const migrations = await Promise.all((await readdir(migrationDir)).filter((name) => name.endsWith('.sql')).sort().map((name) => readFile(new URL(name, migrationDir), 'utf8')));
 const rect = { origin: { x: 10, y: 20 }, size: { width: 30, height: 40 } };
 const note = () => ({ annotation: { id: 'note-1', type: 1, pageIndex: 0, rect: structuredClone(rect), contents: 'Synthetic review', flags: ['print'], created: '2026-10-03T12:00:00.000Z' } });
@@ -86,7 +87,7 @@ test('upgrade migration scrubs old tombstones while preserving live contents and
   insert('live'); insert('deleted');
   db.exec("UPDATE embed_annotations SET deleted=1, revision=7 WHERE annotation_id='deleted'");
   const before = db.prepare("SELECT transfer_json FROM embed_annotations WHERE annotation_id='live'").get();
-  db.exec(await readFile(new URL('../drizzle/0003_scrub_deleted_annotations.sql', import.meta.url), 'utf8'));
+  db.exec(await readFile(new URL('0003_scrub_deleted_annotations.sql', migrationDir), 'utf8'));
   assert.deepEqual({ ...db.prepare("SELECT transfer_json, revision FROM embed_annotations WHERE annotation_id='deleted'").get() }, { transfer_json: '{}', revision: 7 });
   assert.equal(db.prepare("SELECT transfer_json FROM embed_annotations WHERE annotation_id='live'").get().transfer_json, before.transfer_json);
   db.close();

@@ -29,6 +29,7 @@
 import { access, cp, mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Plugin } from "vite";
+import { assertSitesProfile } from "../scripts/select-sites-profile.mjs";
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -53,11 +54,12 @@ export function sites(): Plugin {
       root = config.root;
     },
     async closeBundle() {
+      assertSitesProfile(root);
       const outputDirectory = resolve(root, "dist", ".openai");
       const hostingConfig = resolve(root, ".openai", "hosting.json");
       // Sites applies schema-only migrations. Keep its historical 0000–0002
       // unchanged and use the dedicated lineage for later schema changes.
-      const drizzleSource = resolve(root, "drizzle-sites");
+      const drizzleSource = resolve(root, "drizzle");
 
       await rm(outputDirectory, { recursive: true, force: true });
       await mkdir(outputDirectory, { recursive: true });

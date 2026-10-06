@@ -28,9 +28,11 @@ export default defineConfig(async () => {
         configPath: process.env.MARKROOM_WRANGLER_CONFIG ?? "wrangler.jsonc",
         persistState: { path: ".wrangler/state" },
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
-        ...(hosting ? { config: {
-          d1_databases: [{ binding: hosting.d1, database_name: "site-creator-d1", database_id: "00000000-0000-4000-8000-000000000000", migrations_dir: "drizzle-sites" }],
-          r2_buckets: [{ binding: hosting.r2, bucket_name: "site-creator-r2" }],
+        ...(hosting ? { config(config) {
+          // The object form merges binding arrays with wrangler.jsonc. Mutate
+          // the resolved arrays instead so each Sites binding appears once.
+          config.d1_databases = [{ binding: hosting.d1, database_name: "site-creator-d1", database_id: "00000000-0000-4000-8000-000000000000", migrations_dir: "drizzle" }];
+          config.r2_buckets = [{ binding: hosting.r2, bucket_name: "site-creator-r2" }];
         } } : {}),
       }),
     ],

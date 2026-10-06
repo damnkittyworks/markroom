@@ -4,11 +4,12 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import ts from 'typescript';
 import { buildAdoptionSql } from '../scripts/adopt-legacy-schema.mjs';
+import { standaloneMigrations } from '../scripts/migration-paths.mjs';
 
 const source = await readFile(new URL('../lib/review-schema.ts', import.meta.url), 'utf8');
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } });
 const { assertReviewSchema } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
-const folder = new URL('../drizzle/', import.meta.url);
+const folder = standaloneMigrations;
 const migrations = await Promise.all((await readdir(folder)).filter(n => n.endsWith('.sql')).sort().map(n => readFile(new URL(n, folder), 'utf8')));
 const adapter = db => ({ prepare: sql => ({ first: async () => db.prepare(sql).get() ?? null }) });
 
