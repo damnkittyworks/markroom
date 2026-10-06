@@ -55,7 +55,9 @@ export function sites(): Plugin {
     async closeBundle() {
       const outputDirectory = resolve(root, "dist", ".openai");
       const hostingConfig = resolve(root, ".openai", "hosting.json");
-      const drizzleSource = resolve(root, "drizzle");
+      // Sites applies schema-only migrations. Keep its historical 0000–0002
+      // unchanged and use the dedicated lineage for later schema changes.
+      const drizzleSource = resolve(root, "drizzle-sites");
 
       await rm(outputDirectory, { recursive: true, force: true });
       await mkdir(outputDirectory, { recursive: true });

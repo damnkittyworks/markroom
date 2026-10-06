@@ -45,3 +45,33 @@ and export after adoption.
 Triggers maintain `annotation_usage`; application writes enforce its bound in
 the same SQL statement that changes annotations. Never remove the triggers or
 reset the counter without reconciling it against stored annotation bytes.
+
+## Sites installations
+
+Sites accepts schema-only hosted migrations. Builds with `MARKROOM_SITES=1`
+package the separate `drizzle-sites` migration profile. Its historical
+0000–0002 SQL, snapshots, and journal entries match the original Site exactly;
+later Sites migration tags differ from the standalone D1 lineage. Do not switch
+a running installation between these migration profiles or rewrite applied SQL.
+
+The first hosting-controls upgrade creates the schema before the Worker is
+published. Until initialized, the new Worker returns a migration-required 503
+for review operations. Back up the existing database, configure a private
+`MARKROOM_OPERATOR_KEY` and a stable `MARKROOM_RATE_SALT` in Sites runtime
+settings, publish, then explicitly initialize with the same operator secret in
+your process environment:
+
+```sh
+node scripts/operator.mjs https://your-site.example initialize --confirm
+```
+
+The authenticated operation never creates schema. One atomic batch reconciles
+the usage counter from current stored bytes, scrubs already-deleted contents,
+then inserts the readiness marker. A failed batch rolls back; repeating a
+successful initialization returns `alreadyReady` without writes. Existing
+participants retain their historical roles and names. Review reads and saves
+resume after initialization. Verify existing rooms and annotation accounting.
+
+Configure `MARKROOM_CREATION_KEY` separately to enable new rooms; leaving it
+unset deliberately keeps creation disabled. Use the native Sites publishing
+workflow to apply environment revisions and preserve the existing audience.

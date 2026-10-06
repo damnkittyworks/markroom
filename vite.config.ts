@@ -29,7 +29,7 @@ export default defineConfig(async () => {
         persistState: { path: ".wrangler/state" },
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         ...(hosting ? { config: {
-          d1_databases: [{ binding: hosting.d1, database_name: "site-creator-d1", database_id: "00000000-0000-4000-8000-000000000000", migrations_dir: "drizzle" }],
+          d1_databases: [{ binding: hosting.d1, database_name: "site-creator-d1", database_id: "00000000-0000-4000-8000-000000000000", migrations_dir: "drizzle-sites" }],
           r2_buckets: [{ binding: hosting.r2, bucket_name: "site-creator-r2" }],
         } } : {}),
       }),

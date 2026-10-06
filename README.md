@@ -57,6 +57,11 @@ Before serving traffic, configure separate creation/operator secrets and review 
 
 The standalone source distribution omits installation-specific `.openai/hosting.json`. Existing operators should retain their private copy for maintenance. Standalone development/build does not load or package that project ID. With the installation's configuration present, Sites packaging is explicitly enabled with `MARKROOM_SITES=1 npm run build`; that path keeps the historical local binding names and packages Sites metadata/migrations. `.gitattributes` excludes `.openai` from Git source archives, and `.gitignore` prevents accidentally adding a restored local copy. Never publish credentials in configuration files or push an older repository history containing private installation metadata.
 
+Sites uses the schema-only `drizzle-sites` profile and an explicit one-time
+operator initialization after the hosting-controls upgrade. Follow the
+[Sites upgrade procedure](docs/schema-upgrades.md#sites-installations); the
+standalone `drizzle` migration history is a separate deployment profile.
+
 ## Two-browser acceptance check
 
 Use the included [two-page sample PDF](examples/markroom-sample.pdf) and fictional reviewer names. It contains no personal or customer data. The original sample has no annotations; review marks are added inside your room.
