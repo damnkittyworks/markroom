@@ -24,7 +24,7 @@ npm run dev
 
 Open the local URL printed by Vite and upload [Community workshop](examples/markroom-sample.pdf), the included two-page PDF with selectable text and entirely synthetic content. Use **Demo owner** as your display name, then open the share link in a second browser profile and join as **Demo reviewer**. Try highlighting **“Doors open at 10:00 AM.”** on page 1, add a comment about the opening time, and have the second reviewer reply. Use **Check for updates** to see each other's feedback.
 
-Local D1/R2 data is stored in `.wrangler/state`, outside Git. SQL migrations create the full schema, including retained historical tables, and scrub contents from old deleted annotation records; `db:generate` is for developing schema changes, not initializing a checkout. Apply pending migrations when upgrading an existing installation too. If an old installation used automatic schema creation without migration tracking, do not replay the initial CREATE TABLE migrations: back it up, then apply `drizzle/0003_scrub_deleted_annotations.sql` with `wrangler d1 execute DB --file ...` and the appropriate local/remote config. This erases only already-deleted annotation payloads; live annotations and revision metadata remain.
+Local D1/R2 data is stored in `.wrangler/state`, outside Git. Requests never create tables: apply migrations first. Back up existing installations before upgrades. Automatically created historical schemas without migration tracking must follow [schema adoption](docs/schema-upgrades.md). Configure a private local creation key using [hosting controls](docs/hosting-controls.md) before uploading; room creation is disabled until configured.
 
 For the built Worker preview:
 
@@ -51,7 +51,7 @@ npm run deploy
 
 The environment-variable syntax above is for macOS/Linux; PowerShell uses `$env:MARKROOM_WRANGLER_CONFIG = '.env.wrangler.jsonc'` before `npm run build`. The generated `dist/server/wrangler.json` contains the selected resource configuration. Rebuild whenever changing it. Do not deploy the default placeholder configuration or reuse another operator's project identifier.
 
-Run the two-browser smoke check against your new deployment. Public untrusted hosting needs an operator decision about access control, quotas, abuse prevention, backups, deletion, and support. This guide does not provision those policies automatically.
+Before serving traffic, configure separate creation/operator secrets and review the default budgets in [hosting controls](docs/hosting-controls.md). Run the two-browser smoke check against your new deployment. Room creation is restricted to trusted key holders. Operators still own edge traffic controls, backups, retention, and support.
 
 ### Existing Sites installations
 
@@ -64,20 +64,29 @@ Use the included [two-page sample PDF](examples/markroom-sample.pdf) and fiction
 1. Create a room in browser A. Open its share link in browser B and join with another reviewer name.
 2. Add a highlight and a note in A. In B, check for updates and reply to A's comment. Check for updates in A. Both must show the same thread.
 3. Check that B cannot edit/delete A's annotation. Add a B annotation and verify both survive a reload.
-4. Close the review in A. Both sessions must reject further changes after refreshing/checking for updates.
-5. Download the reviewed PDF and open it in a separate PDF editor. Confirm annotations, replies, page locations, and timestamps; check that comments remain editable. Compare the source PDF to confirm it is unchanged.
+4. Have A try to delete a comment with B’s reply: both browsers must retain the thread, with a clear rejection and no unsaved-change warning. Verify duplicate names are refused and only the actual owner has the owner role.
+5. Close the review in A. Both sessions must reject further changes after refreshing/checking for updates.
+6. Download the reviewed PDF and open it in a separate PDF editor. Confirm annotations, replies, page locations, and timestamps; check that comments remain editable. Compare the source PDF to confirm it is unchanged.
 
 Repeat after viewer/framework upgrades. This smoke check does not establish full Acrobat compatibility or concurrency correctness.
+
+For a migrated, built local preview, `node scripts/check-local-worker.mjs` also
+checks admission, upload cleanup, names, roles, annotation writes, thread
+preservation, rate limits, closing, security headers, and operator takedown.
+It runs only on localhost and creates/deletes a synthetic room. Set
+`MARKROOM_TEST_ORIGIN` (default `http://127.0.0.1:4173`),
+`MARKROOM_TEST_CREATION_KEY`, and `MARKROOM_TEST_OPERATOR_KEY` to match that
+preview. Its fallback keys are public test fixtures, never deployment secrets.
 
 ## Boundaries and privacy
 
 - The server caps uploads at 100 MB, checks their PDF signature, and verifies the streamed byte count. The browser checks the 1–1,000 page range; the server only bounds that client-supplied page count and does not independently parse the whole PDF. Byte-range responses use actual stored object size.
-- Each review is capped at 5,000 retained annotation IDs and 16 MiB of serialized annotation data. Deletions erase contents but retain a small revision tombstone. These per-room limits do not limit the total number of rooms an unauthenticated visitor can create.
+- Each review is capped at 5,000 active annotation IDs, 10,000 retained IDs, and 4 MiB of serialized annotation data. The installation also caps annotation JSON at 64 MiB. Deletions erase contents and free active capacity while retaining bounded synchronization records. Trusted room creation reserves space against global room/PDF budgets before storage. See [all limits](docs/hosting-controls.md).
 - Synchronization uses explicit **Check for updates**. Concurrent edits can conflict; review the displayed result rather than assuming live synchronization.
 - Highlights, notes, text, shapes, ink, links, and threaded replies are supported. Stamps, signatures, attachments, redaction, and form editing remain disabled pending separate round-trip validation.
 - Initiator and reviewer edit capabilities are browser-held tokens; the server stores token hashes. Preserve the initiator's browser state. There is no account-based recovery workflow.
 - Anyone with a room link can view its PDF, names, and comments. Share links and browser-held edit capabilities should be treated as sensitive. This application does not promise end-to-end encryption.
-- There is no automated expiry, retention policy, user-facing deletion workflow, or backup/restore service. Operators are responsible for D1/R2 retention and coordinated deletion, including logs and backups. Closing a room freezes changes; it does not delete its data or revoke read access.
+- There is an authenticated [operator takedown command](docs/hosting-controls.md#inspect-and-take-down-rooms). There is no automated expiry, owner-facing deletion, link rotation, or backup/restore service. Operators remain responsible for logs, backups, and retention. Closing a room freezes changes; it does not delete its data or revoke read access.
 - Do not use this early release for protected health information, payment-card data, or material not approved for the hosting environment. Hosting, request logs, and backups remain subject to the operator's policies.
 
 ## License and dependencies

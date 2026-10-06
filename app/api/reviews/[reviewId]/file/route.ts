@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { reviews } from "../../../../../db/schema";
 import { requestFailure } from "../../../../../lib/request-validation";
@@ -45,7 +45,7 @@ async function getFileResponse(request: Request, context: RouteContext, head = f
         filename: reviews.filename,
       })
       .from(reviews)
-      .where(eq(reviews.id, reviewId))
+      .where(and(eq(reviews.id, reviewId), isNull(reviews.disabledAt)))
       .limit(1);
     if (!review) return jsonError("Review not found.", 404);
 
@@ -68,7 +68,7 @@ async function getFileResponse(request: Request, context: RouteContext, head = f
     if (!head && !object) return jsonError("PDF file not found.", 404);
     const headers = new Headers({
       "accept-ranges": "bytes",
-      "cache-control": "private, max-age=0, must-revalidate",
+      "cache-control": "no-store",
       "content-type": "application/pdf",
       etag: metadata.httpEtag,
       "x-content-type-options": "nosniff",

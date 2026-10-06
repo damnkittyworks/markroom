@@ -34,10 +34,12 @@ export interface EmbedAnnotationRecord {
 }
 
 export interface EmbedAnnotationSnapshot {
+  isOwner: boolean;
   reviewStatus: "open" | "closed";
   annotations: EmbedAnnotationRecord[];
   participant: {
     id: string;
+    isOwner: boolean;
     displayName: string;
   } | null;
 }

@@ -10,7 +10,7 @@ Do not put exploit instructions, live room links, browser-held tokens, customer 
 
 ## Deployment boundaries
 
-Anyone with a room link can read its PDF, reviewer names, and comments. Browser-held capabilities control edits and closing; they are not accounts. Closing freezes a room but does not revoke read access or delete data. Operators must provide their own access controls, global quotas, retention/deletion, and backups. See the [README](README.md#boundaries-and-privacy).
+Anyone with a room link can read its PDF, reviewer names, and comments. Browser-held capabilities control edits and closing; they are not accounts. Closing freezes a room but does not revoke read access or delete data. Room creation requires an operator-issued key. Application budgets, write-rate limits, and authenticated operator takedown are documented in [hosting controls](docs/hosting-controls.md). Operators remain responsible for edge traffic controls, retention, backups, and key distribution. See the [README](README.md#boundaries-and-privacy).
 
 The current dependency findings and their limits are recorded in [the dependency review](docs/dependency-review.md). A passing CI run does not mean the dependency audit is clear or that a public deployment has adequate abuse controls.
 

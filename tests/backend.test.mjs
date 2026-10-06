@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import ts from 'typescript';
@@ -10,9 +10,13 @@ async function helper(name) {
   const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } });
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
 }
-const { validateEmbedTransfer, publicAnnotationRecord } = await helper('embed-validation');
+const { validateEmbedTransfer, publicAnnotationRecord, validateAnnotationThreads } = await helper('embed-validation');
 const { inspectPdfStream, readJsonObject } = await helper('request-validation');
 const { INSERT_ANNOTATION_SQL, UPDATE_ANNOTATION_SQL, INSERT_PARTICIPANT_SQL } = await helper('review-write-sql');
+const { participantNameKey, participantAuthorLabel } = await helper('participant-label');
+const { protectedThreadIds } = await helper('thread-deletion');
+const migrationDir = new URL('../drizzle/', import.meta.url);
+const migrations = await Promise.all((await readdir(migrationDir)).filter((name) => name.endsWith('.sql')).sort().map((name) => readFile(new URL(name, migrationDir), 'utf8')));
 const rect = { origin: { x: 10, y: 20 }, size: { width: 30, height: 40 } };
 const note = () => ({ annotation: { id: 'note-1', type: 1, pageIndex: 0, rect: structuredClone(rect), contents: 'Synthetic review', flags: ['print'], created: '2026-10-03T12:00:00.000Z' } });
 const valid = (input) => validateEmbedTransfer(input, { annotationId: 'note-1', pageCount: 2, authorName: 'Original author' });
@@ -57,16 +61,23 @@ test('public tombstones never contain deleted payloads; corrupt legacy rows are 
 
 function fixture() {
   const db = new DatabaseSync(':memory:');
-  db.exec(`CREATE TABLE reviews (id TEXT PRIMARY KEY, status TEXT);
-    CREATE TABLE participants (id TEXT PRIMARY KEY, review_id TEXT, display_name TEXT, token_hash TEXT, created_at TEXT, last_seen_at TEXT);
-    CREATE TABLE embed_annotations (key TEXT PRIMARY KEY, annotation_id TEXT, review_id TEXT, participant_id TEXT, transfer_json TEXT, revision INTEGER, deleted INTEGER, created_at TEXT, updated_at TEXT);
-    INSERT INTO reviews VALUES ('room', 'open');`);
+  db.exec('PRAGMA foreign_keys=ON');
+  for (const migration of migrations) db.exec(migration);
+  db.exec(`INSERT INTO reviews (id,title,filename,file_key,file_size,page_count,owner_name,owner_token_hash,status)
+    VALUES ('room','Test','test.pdf','test',8,2,'Owner','owner-token','open');
+    INSERT INTO participants (id,review_id,display_name,token_hash,name_key,is_owner) VALUES
+    ('author','room','Author','author-token','author',0), ('owner-person','room','Owner','owner-person-token','owner',1);`);
   // Node 22 treats ?N placeholders as named parameters. Map D1's positional
   // arguments explicitly so these same SQL statements work on every supported Node.
   const run = (sql, ...values) => db.prepare(sql).run(Object.fromEntries(values.map((value, index) => [`?${index + 1}`, value])));
-  const insert = (id, limit = 3, parent = null, parentRev = null, bytes = 10000) => run(INSERT_ANNOTATION_SQL, `room:${id}`, id, 'room', 'author', JSON.stringify(note()), 'now', limit, bytes, parent, parentRev);
-  const update = (id, revision, { deleted = 0, author = 'author', owner = 0, parent = null, parentRev = null, bytes = 10000, content = JSON.stringify(note()) } = {}) => run(UPDATE_ANNOTATION_SQL, deleted ? '{}' : content, deleted, 'later', `room:${id}`, 'room', revision, author, owner, bytes, parent, parentRev);
-  const join = (id, limit = 2) => run(INSERT_PARTICIPANT_SQL, id, 'room', 'Test', id, 'now', limit);
+  const insert = (id, limit = 10, parent = null, parentRev = null, bytes = 10000, active = 5, globalBytes = 100000) => {
+    const transfer = note();
+    transfer.annotation.id = id;
+    if (parent) transfer.annotation.inReplyToId = parent.slice('room:'.length);
+    return run(INSERT_ANNOTATION_SQL, `room:${id}`, id, 'room', 'author', JSON.stringify(transfer), 'now', limit, bytes, parent, parentRev, active, globalBytes);
+  };
+  const update = (id, revision, { deleted = 0, author = 'author', owner = 0, parent = null, parentRev = null, bytes = 10000, content = JSON.stringify(note()), active = 5, globalBytes = 100000 } = {}) => run(UPDATE_ANNOTATION_SQL, deleted ? '{}' : content, deleted, 'later', `room:${id}`, 'room', revision, author, owner, bytes, parent, parentRev, active, globalBytes);
+  const join = (id, limit = 10, name = id) => run(INSERT_PARTICIPANT_SQL, id, 'room', name, id, 'now', limit, participantNameKey(name));
   return { db, insert, update, join };
 }
 
@@ -109,13 +120,98 @@ test('revision, ownership, parent revision and retained/data quotas are enforced
   assert.equal(update('one', 3).changes, 1); // restore does not create another retained row
   assert.equal(insert('child', 3, 'room:one', 1).changes, 0); // parent changed since validation
   assert.equal(insert('child', 3, 'room:one', 4).changes, 1);
-  assert.equal(update('one', 4, { deleted: 1 }).changes, 1);
+  assert.equal(update('one', 4, { deleted: 1 }).changes, 0); // cannot orphan a live reply
   assert.equal(update('child', 1, { parent: 'room:one', parentRev: 5 }).changes, 0);
   assert.equal(insert('oversize', 3, null, null, 1).changes, 0);
   assert.equal(update('child', 1, { bytes: 1 }).changes, 0);
-  assert.equal(join('first', 1).changes, 1);
-  assert.equal(join('second', 1).changes, 0);
+  assert.equal(join('first', 3).changes, 1);
+  assert.equal(join('second', 3).changes, 0);
   db.close();
+});
+
+test('parent deletion and reply creation reject both unsafe race interleavings', () => {
+  const { db, insert, update } = fixture();
+  assert.equal(insert('parent').changes, 1);
+  assert.equal(insert('reply', 10, 'room:parent', 1).changes, 1);
+  // Delete validated before reply insertion must still fail at commit.
+  assert.equal(update('parent', 1, { deleted: 1 }).changes, 0);
+  assert.equal(db.prepare("SELECT deleted FROM embed_annotations WHERE annotation_id='parent'").get().deleted, 0);
+  assert.equal(update('reply', 1, { deleted: 1 }).changes, 1);
+  assert.equal(update('parent', 1, { deleted: 1 }).changes, 1);
+  // Reply validated before parent deletion must still fail at commit.
+  assert.equal(insert('late', 10, 'room:parent', 1).changes, 0);
+  db.close();
+});
+
+test('viewer cascades protect both root and child, even when child deletion is emitted first', () => {
+  const pending = new Map();
+  pending.set('child', { id: 'child', inReplyToId: 'root' });
+  assert.deepEqual(protectedThreadIds('child', [], pending.values()), []);
+  pending.set('root', { id: 'root' });
+  assert.deepEqual(protectedThreadIds('root', [], pending.values()), ['root', 'child']);
+  const rows = [{ id: 'saved-reply', deleted: false, transfer: { annotation: { inReplyToId: 'root' } } }];
+  assert.deepEqual(protectedThreadIds('root', rows, []), ['root', 'saved-reply']);
+  assert.deepEqual(protectedThreadIds('root', [{ ...rows[0], deleted: true }], []), []);
+});
+
+test('deletion frees active quota while retained and global byte bounds remain enforced, including restores', () => {
+  const { db, insert, update } = fixture();
+  assert.equal(insert('one', 3, null, null, 10000, 1).changes, 1);
+  assert.equal(insert('two', 3, null, null, 10000, 1).changes, 0);
+  assert.equal(update('one', 1, { deleted: 1 }).changes, 1);
+  assert.equal(insert('two', 3, null, null, 10000, 1).changes, 1);
+  assert.equal(update('one', 2, { active: 1 }).changes, 0);
+  assert.equal(insert('three', 2).changes, 0); // retained rows still have a ceiling
+  const bytes = db.prepare('SELECT bytes FROM annotation_usage').get().bytes;
+  assert.equal(insert('three', 10, null, null, 10000, 5, bytes).changes, 0);
+  assert.equal(update('two', 1, { globalBytes: 1 }).changes, 0);
+  assert.equal(update('two', 1, { deleted: 1, globalBytes: 1 }).changes, 1); // always permit cleanup
+  assert.equal(db.prepare('SELECT bytes FROM annotation_usage').get().bytes, 4);
+  db.exec("DELETE FROM embed_annotations WHERE annotation_id='one'");
+  assert.equal(db.prepare('SELECT bytes FROM annotation_usage').get().bytes, 2);
+  db.close();
+});
+
+test('disabled room rejects writes and joins after an earlier open read', () => {
+  const { db, insert, update, join } = fixture();
+  insert('one');
+  db.exec("UPDATE reviews SET disabled_at='now' WHERE id='room'");
+  assert.equal(insert('two').changes, 0);
+  assert.equal(update('one', 1, { deleted: 1 }).changes, 0);
+  assert.equal(join('new').changes, 0);
+  db.close();
+});
+
+test('names use canonical keys and same-name joins are rejected in the atomic insert', () => {
+  const { db, join } = fixture();
+  assert.equal(participantNameKey('  Ａlice  SMITH  '), 'alice smith');
+  assert.equal(join('one', 10, 'Ａlice').changes, 1);
+  assert.equal(join('two', 10, 'alice').changes, 0);
+  assert.equal(join('three', 10, 'OWNER').changes, 0);
+  assert.equal(db.prepare("SELECT is_owner FROM participants WHERE id='one'").get().is_owner, 0);
+  db.close();
+});
+
+test('canonical author labels distinguish duplicate names and owner role within PDF author limit', () => {
+  const person = { id: 'abcdefghijklmnopqrstuvwx', displayName: 'A'.repeat(60), isOwner: 0 };
+  const label = participantAuthorLabel(person);
+  assert.ok(label.length <= 60);
+  assert.ok(label.endsWith('[reviewer abcdefghijklmnopqrstuvwx]'));
+  assert.notEqual(label, participantAuthorLabel({ ...person, id: 'zyxwvutsrqponmlkjihgfedcb' }));
+  assert.ok(participantAuthorLabel({ ...person, isOwner: 1 }).includes('[owner '));
+  const stamped = publicAnnotationRecord({ id: 'note-1', authorId: person.id, authorName: label, revision: 1, deleted: 0, transferJson: JSON.stringify({ annotation: { ...note().annotation, author: 'Old misleading name' } }), createdAt: 'now', updatedAt: 'now' }, 2);
+  assert.equal(stamped.transfer.annotation.author, label);
+});
+
+test('legacy orphan replies become invalid records, while intact threads remain exportable', () => {
+  const parent = publicAnnotationRecord({ id: 'note-1', authorId: 'author', authorName: 'Author', revision: 1, deleted: 0, transferJson: JSON.stringify(note()), createdAt: 'now', updatedAt: 'now' }, 2);
+  const child = { ...parent, id: 'reply', transfer: { annotation: { ...note().annotation, id: 'reply', inReplyToId: 'note-1' } } };
+  assert.equal(validateAnnotationThreads([parent, child])[1].invalid, undefined);
+  for (const roots of [[], [{ ...parent, deleted: true, transfer: null }], [{ ...parent, invalid: true, transfer: null }]]) {
+    const checked = validateAnnotationThreads([...roots, child]).at(-1);
+    assert.equal(checked.invalid, true);
+    assert.equal(checked.transfer, null);
+  }
 });
 
 function chunks(parts) { return new ReadableStream({ start(controller) { for (const part of parts) controller.enqueue(new TextEncoder().encode(part)); controller.close(); } }); }

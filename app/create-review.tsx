@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getPdfJs } from "../lib/pdfjs-client";
 
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
@@ -24,6 +24,9 @@ function errorMessage(error: unknown) {
 export function CreateReview() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
+  const [creationKey, setCreationKey] = useState("");
+  const [creationEnabled, setCreationEnabled] = useState<boolean | null>(null);
+  const [availabilityError, setAvailabilityError] = useState("");
   const [ownerName, setOwnerName] = useState("");
   const [title, setTitle] = useState("");
   const [readyFile, setReadyFile] = useState<ReadyFile | null>(null);
@@ -31,6 +34,22 @@ export function CreateReview() {
   const [creating, setCreating] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/reviews", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Room creation availability could not be checked. Reload to try again.");
+        const payload = await response.json() as { creationEnabled?: boolean };
+        setCreationEnabled(payload.creationEnabled === true);
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setAvailabilityError(errorMessage(error));
+        setCreationEnabled(false);
+      });
+    return () => controller.abort();
+  }, []);
 
   async function inspectFile(file: File) {
     setError("");
@@ -74,6 +93,10 @@ export function CreateReview() {
 
   async function createReview(event: React.FormEvent) {
     event.preventDefault();
+    if (!creationEnabled || !creationKey) {
+      setError("Enter a creation key provided by this site's operator to start a room.");
+      return;
+    }
     if (!readyFile) {
       setError("Choose a PDF to start the review.");
       return;
@@ -89,6 +112,7 @@ export function CreateReview() {
         method: "POST",
         headers: {
           "content-type": "application/pdf",
+          "x-markroom-creation-key": creationKey,
           "x-file-name": encodeURIComponent(readyFile.file.name),
           "x-file-size": String(readyFile.file.size),
           "x-page-count": String(readyFile.pageCount),
@@ -107,6 +131,7 @@ export function CreateReview() {
       if (!response.ok || !payload.reviewId || !payload.ownerToken || !payload.participantToken) {
         throw new Error(payload.error || "The review room could not be created.");
       }
+      setCreationKey("");
       localStorage.setItem(
         `markroom:participant:${payload.reviewId}`,
         payload.participantToken,
@@ -193,6 +218,30 @@ export function CreateReview() {
             )}
           </button>
 
+          <p className="privacy-copy">Only open PDFs from people you trust. Files are not sanitized.</p>
+
+          <label className="field">
+            <span>Creation key</span>
+            <input
+              type="password"
+              value={creationKey}
+              onChange={(event) => setCreationKey(event.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              autoCapitalize="none"
+              aria-describedby="creation-key-help"
+              required
+              disabled={creationEnabled !== true || creating}
+            />
+          </label>
+          <p className="privacy-copy" id="creation-key-help" role="status">
+            {creationEnabled === null
+              ? "Checking room creation availability…"
+              : creationEnabled
+                ? "Ask this site's operator for a creation key. Reviewers only need the room link."
+                : availabilityError || "Room creation is currently unavailable. Existing review links still work."}
+          </p>
+
           <div className="field-row">
             <label className="field">
               <span>Review title</span>
@@ -218,7 +267,7 @@ export function CreateReview() {
 
           {error ? <p className="form-error" role="alert">{error}</p> : null}
 
-          <button className="primary-action" type="submit" disabled={creating || analyzing}>
+          <button className="primary-action" type="submit" disabled={creating || analyzing || creationEnabled !== true || !creationKey}>
             <span>{creating ? "Creating review room…" : "Create review room"}</span>
             <span aria-hidden="true">↗</span>
           </button>

@@ -1,5 +1,7 @@
 "use client";
 
+import { protectedThreadIds } from "../../lib/thread-deletion";
+
 import type {
   AnnotationCapability,
   AnnotationEvent,
@@ -49,10 +51,10 @@ function errorMessage(error: unknown) {
 }
 
 async function parseJson<T>(response: Response): Promise<T> {
-  const payload = (await response.json()) as T & { error?: string };
+  const payload = (await response.json()) as T & { error?: string; code?: string };
   if (!response.ok) {
     const error = new Error(payload.error || "The request could not be completed.");
-    Object.assign(error, { status: response.status });
+    Object.assign(error, { status: response.status, code: payload.code });
     throw error;
   }
   return payload;
@@ -230,12 +232,17 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
   const failedSavesRef = useRef(new Map<string, EmbedAnnotationMutation>());
   const invalidRowsRef = useRef(new Set<string>());
   const isClosedRef = useRef(false);
+  const isOwnerRef = useRef(false);
   const operationRef = useRef(false);
+  const pendingViewerDeletesRef = useRef(new Map<string, { id: string; inReplyToId?: unknown }>());
+  const blockedThreadDeletesRef = useRef(new Set<string>());
+  const restoringThreadRef = useRef(false);
 
   const [snapshot, setSnapshot] = useState<ReviewSnapshot | null>(null);
   const [participant, setParticipant] = useState<EmbedAnnotationSnapshot["participant"]>(null);
   const [participantToken, setParticipantToken] = useState<string | null>(null);
   const [ownerToken, setOwnerToken] = useState<string | null>(null);
+  const [isOwner, setIsOwner] = useState(false);
   const [identityReady, setIdentityReady] = useState(false);
   const [dataReady, setDataReady] = useState(false);
   const [viewerReady, setViewerReady] = useState(false);
@@ -258,7 +265,6 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
     ? ""
     : `${window.location.origin}/review/${reviewId}`;
   const isClosed = snapshot?.review.status === "closed";
-  const isOwner = Boolean(ownerToken);
   const canOpenViewer = Boolean(participant) || isClosed;
   const busy = checking || closing || downloading || retrying;
   const shouldJoin = Boolean(
@@ -268,7 +274,10 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
   async function fetchEmbedRows(token = participantToken ?? "") {
     const response = await fetch(`/api/reviews/${reviewId}/embed-annotations`, {
       cache: "no-store",
-      headers: token ? { "x-markroom-participant-token": token } : undefined,
+      headers: {
+        ...(token ? { "x-markroom-participant-token": token } : {}),
+        ...(ownerToken ? { "x-markroom-owner-token": ownerToken } : {}),
+      },
     });
     return parseJson<EmbedAnnotationSnapshot>(response);
   }
@@ -323,7 +332,7 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
     }));
   }
 
-  function rememberSaved(saved: Awaited<ReturnType<typeof sendMutation>>) {
+  async function rememberSaved(saved: Awaited<ReturnType<typeof sendMutation>>) {
     const id = saved.annotationId;
     const previous = serverRowsRef.current.get(id);
     revisionMapRef.current.set(id, saved.revision);
@@ -342,6 +351,16 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
     }
     failedSavesRef.current.delete(id);
     setFailedSaveCount(failedSavesRef.current.size);
+    // Keep the viewer and exported PDF aligned with server-owned author metadata.
+    const current = annotationRef.current?.forDocument(documentIdRef.current).getAnnotationById(id)?.object;
+    if (saved.transfer && current && current.author !== saved.authorName) {
+      remoteCommitIdsRef.current.add(id);
+      annotationRef.current!.forDocument(documentIdRef.current).updateAnnotation(
+        current.pageIndex, id, { author: saved.authorName },
+      );
+      await waitForAnnotationCommit(annotationRef.current!, documentIdRef.current);
+      remoteCommitIdsRef.current.delete(id);
+    }
   }
 
   async function flushLocalChanges() {
@@ -425,7 +444,7 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
         };
         // Retain both the change and its original revision until the server confirms it.
         failedSavesRef.current.set(annotationId, mutation);
-        rememberSaved(await sendMutation(mutation));
+        await rememberSaved(await sendMutation(mutation));
         if (!failedSavesRef.current.size) {
           setActionError("");
           setSyncMessage(`Saved · ${new Date().toLocaleTimeString([], {
@@ -434,7 +453,24 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
           })}`);
         }
       })
-      .catch((error) => {
+      .catch(async (error: unknown) => {
+        if (error instanceof Error && "code" in error && error.code === "thread_has_replies") {
+          try {
+            const next = await fetchEmbedRows();
+            observeReviewStatus(next.reviewStatus);
+            const parent = next.annotations.find((row) => row.id === annotationId);
+            if (!parent || parent.deleted || parent.invalid) throw new Error("The comment could not be restored.");
+            await applyServerRows(next.annotations, true);
+            if (invalidRowsRef.current.has(annotationId)) throw new Error("The comment could not be restored.");
+            failedSavesRef.current.delete(annotationId);
+            setFailedSaveCount(failedSavesRef.current.size);
+            setActionError(`${errorMessage(error)} The comment has been restored.`);
+            setSyncMessage("Comment restored · replies preserved");
+            return;
+          } catch {
+            // Keep the rejected change visible in recovery controls if restoring fails.
+          }
+        }
         setFailedSaveCount(failedSavesRef.current.size);
         setActionError(
           `${errorMessage(error)} Your changes remain in this tab. Retry saving before leaving.`,
@@ -466,7 +502,7 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
         continue;
       }
       invalidRowsRef.current.delete(row.id);
-      const ownershipLocked = !isOwner && row.authorId !== participant?.id;
+      const ownershipLocked = !isOwnerRef.current && row.authorId !== participant?.id;
       if (row.deleted || !ownershipLocked) {
         ownershipLockedIdsRef.current.delete(row.id);
       } else {
@@ -485,7 +521,7 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
         if (existing) {
           scope.deleteAnnotation(existing.pageIndex, row.id);
           changed += 1;
-        } else {
+        } else if (!pendingViewerDeletesRef.current.has(row.id)) {
           remoteCommitIdsRef.current.delete(row.id);
         }
         continue;
@@ -525,6 +561,8 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
   async function synchronizeRows() {
     const next = await fetchEmbedRows();
     if (next.participant) setParticipant(next.participant);
+    isOwnerRef.current = next.isOwner;
+    setIsOwner(next.isOwner);
     observeReviewStatus(next.reviewStatus);
     const changed = await applyServerRows(next.annotations);
     setSyncMessage(
@@ -582,7 +620,7 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
         if ((remote?.revision ?? 0) !== (mutation.expectedRevision ?? 0)) {
           throw new Error("Someone changed the same annotation. Copy any text you need, then discard the unsaved change to load their version.");
         }
-        rememberSaved(await sendMutation(mutation));
+        await rememberSaved(await sendMutation(mutation));
       }
       await synchronizeRows();
       setSyncMessage("All changes saved");
@@ -617,10 +655,10 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
         joined.participantToken,
       );
       setParticipantToken(joined.participantToken);
-      setParticipant({
-        id: joined.participantId,
-        displayName: joined.displayName,
-      });
+      const identity = await fetchEmbedRows(joined.participantToken);
+      setParticipant(identity.participant);
+      isOwnerRef.current = identity.isOwner;
+      setIsOwner(identity.isOwner);
       const next = await fetch(`/api/reviews/${reviewId}`, { cache: "no-store" });
       setSnapshot(await parseJson<ReviewSnapshot>(next));
     } catch (error) {
@@ -641,7 +679,7 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
       await withSavedAnnotations(async () => {
         await synchronizeRows();
         if (invalidRowsRef.current.size) {
-          throw new Error("Some shared annotations could not be read. Export is blocked to avoid leaving them out.");
+          throw new Error("Some shared annotations or reply threads are incomplete or unreadable. Export is blocked to avoid leaving them out.");
         }
         await flushLocalChanges();
         const data = await exporter.forDocument(documentId).saveAsCopy().toPromise();
@@ -657,9 +695,9 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
   }
 
   async function closeReview() {
-    if (!ownerToken || !snapshot || isClosed) return;
+    if (!isOwner || !ownerToken || !snapshot || isClosed) return;
     const approved = window.confirm(
-      "Close this review? Reviewers can still read and download it, but no one will be able to add or change comments.",
+      "Close this review? Anyone with the link can still read the review and access the original PDF. Only the owner has the reviewed-PDF download button. No one will be able to add or change comments.",
     );
     if (!approved) return;
     setClosing(true);
@@ -719,6 +757,8 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
         setSnapshot(reviewSnapshot);
         isClosedRef.current = reviewSnapshot.review.status === "closed";
         setParticipant(embedSnapshot.participant);
+        isOwnerRef.current = embedSnapshot.isOwner;
+        setIsOwner(embedSnapshot.isOwner);
         document.title = `${reviewSnapshot.review.title} — Markroom`;
         setDataReady(true);
       })
@@ -815,7 +855,51 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
         annotationRef.current = annotations;
         exportRef.current = exporter;
         unsubscribeAnnotations = annotations.onAnnotationEvent((event) => {
-          if (event.type === "loaded" || !event.committed) return;
+          if (event.type === "loaded") return;
+          if (!event.committed) {
+            if (event.type === "delete") {
+              pendingViewerDeletesRef.current.set(event.annotation.id, event.annotation);
+              if (remoteCommitIdsRef.current.has(event.annotation.id)) {
+                // A server-applied root deletion can cascade through children
+                // whose tombstones occur later in the same snapshot.
+                for (const child of pendingViewerDeletesRef.current.values()) {
+                  if (child.inReplyToId === event.annotation.id) remoteCommitIdsRef.current.add(child.id);
+                }
+              } else {
+                for (const id of protectedThreadIds(event.annotation.id, serverRowsRef.current.values(), pendingViewerDeletesRef.current.values())) {
+                  blockedThreadDeletesRef.current.add(id);
+                }
+              }
+            }
+            return;
+          }
+          pendingViewerDeletesRef.current.delete(event.annotation.id);
+          if (event.type === "delete" && blockedThreadDeletesRef.current.has(event.annotation.id)) {
+            if (!restoringThreadRef.current) {
+              restoringThreadRef.current = true;
+              setSavingCount((count) => count + 1);
+              // Wait until the entire PDF-engine commit finishes. Never send
+              // its cascading child deletions to the server as separate edits.
+              saveQueueRef.current = saveQueueRef.current.then(async () => {
+                await waitForAnnotationCommit(annotations, documentIdRef.current);
+                const next = await fetchEmbedRows();
+                observeReviewStatus(next.reviewStatus);
+                await applyServerRows(next.annotations, true);
+                setActionError("This comment has replies. The thread has been restored; remove replies individually before deleting the comment.");
+                setSyncMessage("Comment restored · replies preserved");
+              }).catch(() => {
+                for (const id of blockedThreadDeletesRef.current) invalidRowsRef.current.add(id);
+                setInvalidRowCount(invalidRowsRef.current.size);
+                setActionError("The shared thread is unchanged, but it could not be restored in this tab. Reload the room before continuing.");
+                setViewerReadOnly(true);
+              }).finally(() => {
+                blockedThreadDeletesRef.current.clear();
+                restoringThreadRef.current = false;
+                setSavingCount((count) => Math.max(0, count - 1));
+              });
+            }
+            return;
+          }
           if (remoteCommitIdsRef.current.has(event.annotation.id)) {
             remoteCommitIdsRef.current.delete(event.annotation.id);
             return;
@@ -841,6 +925,8 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
         const current = await fetchEmbedRows();
         if (disposed) return;
         observeReviewStatus(current.reviewStatus);
+        isOwnerRef.current = current.isOwner;
+        setIsOwner(current.isOwner);
         revisionMapRef.current.clear();
         managedIdsRef.current.clear();
         serverRowsRef.current.clear();
@@ -968,6 +1054,28 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
         </div>
       </section>
 
+      <section className="review-trust-bar" aria-label="Review identity and document safety">
+        <span>
+          {participant ? <>Reviewing as <strong>{participant.displayName}</strong></> : "Read-only visitor"}
+          {isOwner ? <span className="review-owner-badge">Owner</span> : null}
+          {isClosed ? " · Review closed" : null}
+        </span>
+        {snapshot ? (
+          <details className="review-participant-list">
+            <summary>{snapshot.participants.length} participants</summary>
+            <ul>
+              {snapshot.participants.map((person) => (
+                <li key={person.id}>
+                  {person.displayName}
+                  {person.isOwner ? <span className="review-owner-badge">Owner</span> : null}
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+        <span>Only open PDFs from people you trust. Files are not sanitized.</span>
+      </section>
+
       <div className="native-alert-stack">
       {actionError ? (
         <div className="room-alert native-room-alert" role="alert">
@@ -990,7 +1098,7 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
 
       {invalidRowCount > 0 ? (
         <div className="room-alert native-room-alert" role="alert">
-          {invalidRowCount} shared {invalidRowCount === 1 ? "annotation could" : "annotations could"} not be read. The rest of the review is available; export is blocked until the unreadable data is repaired or removed.
+          {invalidRowCount} shared {invalidRowCount === 1 ? "annotation could" : "annotations could"} not be read or belong to an incomplete reply thread. The rest of the review is available; export is blocked until this data is repaired or removed.
         </div>
       ) : null}
       </div>

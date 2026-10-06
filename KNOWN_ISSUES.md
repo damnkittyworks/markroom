@@ -1,6 +1,6 @@
 # Known issues and release boundaries
 
-Reviewed 2026-10-03. Markroom is an early self-hosted release. These are outstanding limitations, not completed features or promises of a fix date.
+Updated 2026-10-05. Markroom is an early self-hosted release. These are outstanding limitations, not completed features or promises of a fix date.
 
 ## Dependencies and distributed assets
 
@@ -18,10 +18,10 @@ Reviewed 2026-10-03. Markroom is an early self-hosted release. These are outstan
 
 - A room link grants read access to the PDF, names, and comments. Closing the review freezes writes; it does not revoke read access.
 - Edit capabilities live in browser storage. There is no account-based recovery, share-link rotation, or read-access revocation workflow.
-- Upload and per-room annotation limits are enforced, but there is no global room quota or rate limit. Public hosting needs additional abuse controls.
-- There is no automated expiry, user-facing room deletion, or managed backup/restore. Operators own retention and coordinated deletion across D1, R2, logs, and backups.
+- Creation keys, persistent write-rate limits, global room/PDF/annotation budgets, and operator takedown are available. Operators must configure secrets, review budgets, and provide edge traffic controls; see [hosting controls](docs/hosting-controls.md).
+- There is no automated expiry, owner-facing deletion, or managed backup/restore. Operator takedown deletes application D1/R2 records; operators still own logs, backups, and downloaded copies.
 - The server enforces the streamed 100 MB byte limit and PDF signature. It bounds the submitted page-count value; only the browser parses the 1–1,000 page count. This does not sanitize uploaded PDFs.
 
 ## Upgrade checks
 
-Use the [two-browser acceptance check](README.md#two-browser-acceptance-check) after framework/viewer upgrades. Back up existing installations before migrations. Older installations that auto-created tables without migration tracking need the targeted deletion-cleanup procedure in [Run locally](README.md#run-locally), rather than replaying the initial CREATE TABLE migrations.
+Use the [two-browser acceptance check](README.md#two-browser-acceptance-check) after framework/viewer upgrades. Back up existing installations before migrations. Older installations that auto-created tables without migration tracking need the guarded [schema adoption procedure](docs/schema-upgrades.md), rather than replaying the initial CREATE TABLE migrations. Requests no longer create schema.

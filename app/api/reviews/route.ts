@@ -1,10 +1,9 @@
-import { getDb } from "../../../db";
-import { participants, reviews } from "../../../db/schema";
 import {
   cleanText,
   ensureReviewSchema,
   fileKeyForReview,
   getReviewFiles,
+  getReviewD1,
   hashToken,
   jsonError,
   makeId,
@@ -15,6 +14,12 @@ import {
   nowIso,
 } from "../../../lib/review-server";
 import { inspectPdfStream, requestFailure } from "../../../lib/request-validation";
+import { creationEnabled, enforceRateLimit, requireCreator, reserveUpload } from "../../../lib/hosting-controls";
+import { participantNameKey } from "../../../lib/participant-label";
+
+export async function GET() {
+  return Response.json({ creationEnabled: creationEnabled() }, { headers: { "cache-control": "no-store" } });
+}
 
 function decodeHeader(value: string | null) {
   if (!value) return "";
@@ -27,6 +32,8 @@ function decodeHeader(value: string | null) {
 
 export async function POST(request: Request) {
   try {
+    // Check admission before reading the body or touching persistence.
+    await requireCreator(request);
     const contentType = request.headers.get("content-type") ?? "";
     if (!contentType.toLowerCase().startsWith("application/pdf")) {
       return jsonError("Choose a PDF file.", 415);
@@ -84,7 +91,9 @@ export async function POST(request: Request) {
     if (!body) return jsonError("The uploaded PDF was empty.");
 
     await ensureReviewSchema();
+    await enforceRateLimit(request, "create", 10, 3600);
     const bucket = getReviewFiles();
+    await reserveUpload(reviewId, fileKey, claimedSize);
     const inspected = inspectPdfStream(body, claimedSize, MAX_FILE_BYTES);
     try {
       // R2 requires a known-length stream. The inspecting stream independently
@@ -97,33 +106,33 @@ export async function POST(request: Request) {
         httpMetadata: { contentType: "application/pdf" },
         customMetadata: { originalName: encodeURIComponent(filename) },
       });
-      const db = getDb();
-      await db.batch([
-        db.insert(reviews).values({
-          id: reviewId,
-          title,
-          filename,
-          fileKey,
-          fileSize: inspected.size(),
-          pageCount,
-          ownerName,
-          ownerTokenHash: await hashToken(ownerToken),
-          createdAt,
-          updatedAt: createdAt,
-        }),
-        db.insert(participants).values({
-          id: participantId,
-          reviewId,
-          displayName: ownerName,
-          tokenHash: await hashToken(participantToken),
-          createdAt,
-          lastSeenAt: createdAt,
-        }),
+      const db = getReviewD1();
+      const results = await db.batch([
+        db.prepare(`INSERT INTO reviews (id,title,filename,file_key,file_size,page_count,owner_name,owner_token_hash,created_at,updated_at)
+          SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?9
+          WHERE EXISTS (SELECT 1 FROM upload_reservations WHERE review_id=?1)`)
+          .bind(reviewId, title, filename, fileKey, inspected.size(), pageCount, ownerName, await hashToken(ownerToken), createdAt),
+        db.prepare(`INSERT INTO participants (id,review_id,display_name,name_key,is_owner,token_hash,created_at,last_seen_at)
+          SELECT ?1,?2,?3,?4,1,?5,?6,?6 WHERE EXISTS (SELECT 1 FROM reviews WHERE id=?2)`)
+          .bind(participantId, reviewId, ownerName, participantNameKey(ownerName), await hashToken(participantToken), createdAt),
+        db.prepare("DELETE FROM upload_reservations WHERE review_id=?1").bind(reviewId),
       ]);
+      if (results[0].meta.changes !== 1 || results[1].meta.changes !== 1) throw new Error("Upload reservation is unavailable.");
     } catch (error) {
-      await bucket.delete(fileKey).catch(() => undefined);
-      // Storage adapters may wrap stream failures; retain the validation status.
-      throw inspected.failure() ?? error;
+      // A persistence error may be an ambiguous acknowledgement after commit.
+      // Never delete the original of a review that actually became durable.
+      // If this read also fails, leave storage and its counted reservation alone.
+      const committed = await getReviewD1().prepare("SELECT id FROM reviews WHERE id=?1").bind(reviewId).first();
+      if (!committed) {
+        // Release budget only after confirmed storage cleanup. Failed cleanup
+        // leaves a visible reservation for the operator, not unaccounted bytes.
+        try {
+          await bucket.delete(fileKey);
+          await getReviewD1().prepare("DELETE FROM upload_reservations WHERE review_id=?1").bind(reviewId).run();
+        } catch { /* Keep the reservation on cleanup failure. */ }
+        // Storage adapters may wrap stream failures; retain the validation status.
+        throw inspected.failure() ?? error;
+      }
     }
 
     return Response.json(

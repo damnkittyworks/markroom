@@ -115,3 +115,19 @@ export function publicAnnotationRecord(row: Omit<EmbedAnnotationRecord, "transfe
   try { transfer = validateEmbedTransfer(JSON.parse(transferJson), { annotationId: row.id, pageCount, authorName: row.authorName }); } catch { /* Keep one corrupt historical row from breaking the room. */ }
   return { ...identity, deleted: false, transfer, ...(transfer ? {} : { invalid: true }) };
 }
+
+/** Keep incomplete historical threads visible as a repair-needed state; never silently export them. */
+export function validateAnnotationThreads(rows: EmbedAnnotationRecord[]): EmbedAnnotationRecord[] {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return rows.map((row) => {
+    const parentId = row.transfer?.annotation.inReplyToId;
+    if (row.deleted || typeof parentId !== "string") return row;
+    const parent = byId.get(parentId);
+    if (!parent || parent.deleted || parent.invalid || !parent.transfer ||
+      parent.transfer.annotation.inReplyToId !== undefined ||
+      parent.transfer.annotation.pageIndex !== row.transfer?.annotation.pageIndex) {
+      return { ...row, transfer: null, invalid: true };
+    }
+    return row;
+  });
+}

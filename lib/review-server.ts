@@ -1,10 +1,11 @@
 import { env } from "cloudflare:workers";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { getDb } from "../db";
-import { annotations, participants, replies, reviews } from "../db/schema";
+import { participants, reviews } from "../db/schema";
+import { assertReviewSchema } from "./review-schema";
+import { RequestError } from "./request-validation";
 import type {
   AnnotationDraft,
-  ReviewAnnotation,
   ReviewSnapshot,
 } from "./review-types";
 
@@ -38,91 +39,6 @@ type ReviewFileBucket = {
   delete(key: string): Promise<void>;
 };
 
-const schemaStatements = [
-  `CREATE TABLE IF NOT EXISTS reviews (
-    id TEXT PRIMARY KEY NOT NULL,
-    title TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    file_key TEXT NOT NULL,
-    file_size INTEGER NOT NULL,
-    page_count INTEGER NOT NULL,
-    owner_name TEXT NOT NULL,
-    owner_token_hash TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'open',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    closed_at TEXT
-  )`,
-  `CREATE INDEX IF NOT EXISTS reviews_updated_at_idx ON reviews (updated_at)`,
-  `CREATE TABLE IF NOT EXISTS participants (
-    id TEXT PRIMARY KEY NOT NULL,
-    review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
-    display_name TEXT NOT NULL,
-    token_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE INDEX IF NOT EXISTS participants_review_id_idx ON participants (review_id)`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS participants_review_token_idx ON participants (review_id, token_hash)`,
-  `CREATE TABLE IF NOT EXISTS annotations (
-    id TEXT PRIMARY KEY NOT NULL,
-    review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
-    participant_id TEXT NOT NULL REFERENCES participants(id) ON DELETE RESTRICT,
-    page_number INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    x REAL NOT NULL,
-    y REAL NOT NULL,
-    width REAL NOT NULL DEFAULT 0,
-    height REAL NOT NULL DEFAULT 0,
-    pdf_x REAL NOT NULL,
-    pdf_y REAL NOT NULL,
-    pdf_width REAL NOT NULL DEFAULT 0,
-    pdf_height REAL NOT NULL DEFAULT 0,
-    color TEXT NOT NULL DEFAULT '#e8573c',
-    body TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'open',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE INDEX IF NOT EXISTS annotations_review_page_idx ON annotations (review_id, page_number)`,
-  `CREATE INDEX IF NOT EXISTS annotations_review_updated_idx ON annotations (review_id, updated_at)`,
-  // Historical table retained so existing experimental records are not destroyed.
-  `CREATE TABLE IF NOT EXISTS native_annotations (
-    key TEXT PRIMARY KEY NOT NULL,
-    annotation_id TEXT NOT NULL,
-    review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
-    participant_id TEXT NOT NULL REFERENCES participants(id) ON DELETE RESTRICT,
-    xfdf TEXT NOT NULL,
-    revision INTEGER NOT NULL DEFAULT 1,
-    deleted INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS native_annotations_review_annotation_idx ON native_annotations (review_id, annotation_id)`,
-  `CREATE INDEX IF NOT EXISTS native_annotations_review_updated_idx ON native_annotations (review_id, updated_at)`,
-  `CREATE TABLE IF NOT EXISTS embed_annotations (
-    key TEXT PRIMARY KEY NOT NULL,
-    annotation_id TEXT NOT NULL,
-    review_id TEXT NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
-    participant_id TEXT NOT NULL REFERENCES participants(id) ON DELETE RESTRICT,
-    transfer_json TEXT NOT NULL,
-    revision INTEGER NOT NULL DEFAULT 1,
-    deleted INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS embed_annotations_review_annotation_idx ON embed_annotations (review_id, annotation_id)`,
-  `CREATE INDEX IF NOT EXISTS embed_annotations_review_updated_idx ON embed_annotations (review_id, updated_at)`,
-  `CREATE TABLE IF NOT EXISTS replies (
-    id TEXT PRIMARY KEY NOT NULL,
-    annotation_id TEXT NOT NULL REFERENCES annotations(id) ON DELETE CASCADE,
-    participant_id TEXT NOT NULL REFERENCES participants(id) ON DELETE RESTRICT,
-    body TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE INDEX IF NOT EXISTS replies_annotation_id_idx ON replies (annotation_id)`,
-];
-
 let schemaReady: Promise<void> | null = null;
 
 export function getReviewD1() { return env.DB; }
@@ -138,11 +54,11 @@ export function getReviewFiles() {
 export async function ensureReviewSchema() {
   if (!schemaReady) {
     schemaReady = (async () => {
-      const d1 = env.DB;
-      await d1.batch(schemaStatements.map((statement) => d1.prepare(statement)));
+      await assertReviewSchema(env.DB);
     })().catch((error) => {
       schemaReady = null;
-      throw error;
+      if (error instanceof RequestError) throw error;
+      throw new RequestError("The review database is not ready. Ask the operator to run wrangler d1 migrations apply DB using this deployment’s configuration. Legacy installations must follow the schema adoption instructions first.", 503);
     });
   }
   await schemaReady;
@@ -195,16 +111,18 @@ export async function findParticipant(reviewId: string, rawToken: string) {
   const tokenHash = await hashToken(token);
   const db = getDb();
   const [participant] = await db
-    .select()
+    .select({ participant: participants })
     .from(participants)
+    .innerJoin(reviews, eq(participants.reviewId, reviews.id))
     .where(
       and(
         eq(participants.reviewId, reviewId),
         eq(participants.tokenHash, tokenHash),
+        isNull(reviews.disabledAt),
       ),
     )
     .limit(1);
-  return participant ?? null;
+  return participant?.participant ?? null;
 }
 
 export async function isReviewOwner(reviewId: string, rawToken: string) {
@@ -216,7 +134,7 @@ export async function isReviewOwner(reviewId: string, rawToken: string) {
     .select({ id: reviews.id })
     .from(reviews)
     .where(
-      and(eq(reviews.id, reviewId), eq(reviews.ownerTokenHash, tokenHash)),
+      and(eq(reviews.id, reviewId), eq(reviews.ownerTokenHash, tokenHash), isNull(reviews.disabledAt)),
     )
     .limit(1);
   return Boolean(review);
@@ -285,70 +203,20 @@ export async function getReviewSnapshot(reviewId: string): Promise<ReviewSnapsho
   const [reviewRow] = await db
     .select()
     .from(reviews)
-    .where(eq(reviews.id, reviewId))
+    .where(and(eq(reviews.id, reviewId), isNull(reviews.disabledAt)))
     .limit(1);
   if (!reviewRow) return null;
 
-  const [participantRows, annotationRows, replyRows] = await Promise.all([
-    db
-      .select({
-        id: participants.id,
-        displayName: participants.displayName,
-        createdAt: participants.createdAt,
-      })
-      .from(participants)
-      .where(eq(participants.reviewId, reviewId))
-      .orderBy(asc(participants.createdAt)),
-    db
-      .select({
-        id: annotations.id,
-        pageNumber: annotations.pageNumber,
-        kind: annotations.kind,
-        x: annotations.x,
-        y: annotations.y,
-        width: annotations.width,
-        height: annotations.height,
-        pdfX: annotations.pdfX,
-        pdfY: annotations.pdfY,
-        pdfWidth: annotations.pdfWidth,
-        pdfHeight: annotations.pdfHeight,
-        color: annotations.color,
-        body: annotations.body,
-        status: annotations.status,
-        authorName: participants.displayName,
-        createdAt: annotations.createdAt,
-        updatedAt: annotations.updatedAt,
-      })
-      .from(annotations)
-      .innerJoin(participants, eq(annotations.participantId, participants.id))
-      .where(eq(annotations.reviewId, reviewId))
-      .orderBy(asc(annotations.createdAt)),
-    db
-      .select({
-        id: replies.id,
-        annotationId: replies.annotationId,
-        authorName: participants.displayName,
-        body: replies.body,
-        createdAt: replies.createdAt,
-      })
-      .from(replies)
-      .innerJoin(participants, eq(replies.participantId, participants.id))
-      .innerJoin(annotations, eq(replies.annotationId, annotations.id))
-      .where(eq(annotations.reviewId, reviewId))
-      .orderBy(asc(replies.createdAt)),
-  ]);
-
-  const repliesByAnnotation = new Map<string, typeof replyRows>();
-  for (const reply of replyRows) {
-    const list = repliesByAnnotation.get(reply.annotationId) ?? [];
-    list.push(reply);
-    repliesByAnnotation.set(reply.annotationId, list);
-  }
-
-  const annotationSnapshot: ReviewAnnotation[] = annotationRows.map((annotation) => ({
-    ...annotation,
-    replies: repliesByAnnotation.get(annotation.id) ?? [],
-  }));
+  const participantRows = await db
+    .select({
+      id: participants.id,
+      displayName: participants.displayName,
+      isOwner: participants.isOwner,
+      createdAt: participants.createdAt,
+    })
+    .from(participants)
+    .where(eq(participants.reviewId, reviewId))
+    .orderBy(asc(participants.createdAt));
 
   return {
     review: {
@@ -364,6 +232,6 @@ export async function getReviewSnapshot(reviewId: string): Promise<ReviewSnapsho
       closedAt: reviewRow.closedAt,
     },
     participants: participantRows,
-    annotations: annotationSnapshot,
+    annotations: [],
   };
 }

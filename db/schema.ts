@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   integer,
   real,
@@ -25,6 +26,7 @@ export const reviews = sqliteTable(
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     closedAt: text("closed_at"),
+    disabledAt: text("disabled_at"),
   },
   (table) => [index("reviews_updated_at_idx").on(table.updatedAt)],
 );
@@ -37,6 +39,8 @@ export const participants = sqliteTable(
       .notNull()
       .references(() => reviews.id, { onDelete: "cascade" }),
     displayName: text("display_name").notNull(),
+    nameKey: text("name_key").notNull().default(""),
+    isOwner: integer("is_owner", { mode: "boolean" }).notNull().default(false),
     tokenHash: text("token_hash").notNull(),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     lastSeenAt: text("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -159,3 +163,26 @@ export const replies = sqliteTable(
   },
   (table) => [index("replies_annotation_id_idx").on(table.annotationId)],
 );
+
+// Operator controls and durable accounting. Database triggers maintain usage.
+export const uploadReservations = sqliteTable("upload_reservations", {
+  reviewId: text("review_id").primaryKey(),
+  fileKey: text("file_key").notNull().unique(),
+  fileSize: integer("file_size").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [check("upload_reservations_nonnegative", sql`${table.fileSize} >= 0`)]);
+
+export const rateLimits = sqliteTable("rate_limits", {
+  key: text("key").primaryKey(),
+  windowStart: integer("window_start").notNull(),
+  hits: integer("hits").notNull(),
+});
+
+export const annotationUsage = sqliteTable("annotation_usage", {
+  id: integer("id").primaryKey(),
+  bytes: integer("bytes").notNull(),
+}, (table) => [check("annotation_usage_singleton", sql`${table.id} = 1`), check("annotation_usage_nonnegative", sql`${table.bytes} >= 0`)]);
+
+export const markroomSchema = sqliteTable("markroom_schema", {
+  version: integer("version").primaryKey(),
+});

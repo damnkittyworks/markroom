@@ -17,6 +17,7 @@ export interface ReviewSummary {
 
 export interface ReviewParticipant {
   id: string;
+  isOwner: boolean;
   displayName: string;
   createdAt: string;
 }

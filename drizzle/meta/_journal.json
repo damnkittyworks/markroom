@@ -29,6 +29,13 @@
       "when": 1791062998140,
       "tag": "0003_scrub_deleted_annotations",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1791158400000,
+      "tag": "0004_hosting_controls",
+      "breakpoints": true
     }
   ]
 }

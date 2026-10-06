@@ -28,7 +28,17 @@ declare namespace Cloudflare {
   interface Env {
     DB: D1Database;
     FILES?: unknown;
+    MARKROOM_CREATION_KEY?: string;
+    MARKROOM_OPERATOR_KEY?: string;
+    MARKROOM_RATE_SALT?: string;
+    MARKROOM_MAX_ROOMS?: string;
+    MARKROOM_MAX_STORED_BYTES?: string;
   }
+}
+
+declare class HTMLRewriter {
+  on(selector: string, handlers: { element(element: { setAttribute(name: string, value: string): void }): void }): HTMLRewriter;
+  transform(response: Response): Response;
 }
 
 declare module "cloudflare:workers" {

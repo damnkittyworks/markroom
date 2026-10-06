@@ -1,7 +1,8 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { readJsonObject, requestFailure } from "../../../../lib/request-validation";
 import { getDb } from "../../../../db";
 import { reviews } from "../../../../db/schema";
+import { enforceRateLimit } from "../../../../lib/hosting-controls";
 import {
   ensureReviewSchema,
   getReviewSnapshot,
@@ -37,12 +38,13 @@ export async function PATCH(request: Request, context: RouteContext) {
     if (!(await isReviewOwner(reviewId, typeof payload.ownerToken === "string" ? payload.ownerToken : ""))) {
       return jsonError("Only the review initiator can close this room.", 403);
     }
+    await enforceRateLimit(request, `close:${reviewId}`, 20, 60);
     const db = getDb();
     const updatedAt = nowIso();
     await db
       .update(reviews)
       .set({ status: "closed", closedAt: updatedAt, updatedAt })
-      .where(eq(reviews.id, reviewId));
+      .where(and(eq(reviews.id, reviewId), isNull(reviews.disabledAt)));
     return Response.json({ status: "closed", updatedAt });
   } catch (error) {
     return requestFailure(error, "Unable to update the review.");
