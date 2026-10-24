@@ -258,7 +258,7 @@ export function CreateReview() {
                 value={ownerName}
                 onChange={(event) => setOwnerName(event.target.value)}
                 maxLength={60}
-                placeholder="Lily"
+                placeholder="Your name"
                 autoComplete="name"
                 required
               />
