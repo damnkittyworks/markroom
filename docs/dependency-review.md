@@ -1,6 +1,6 @@
 # Dependency review
 
-Reviewed 2026-10-03 against this repository's lockfile and locally built Worker. This is a dated assessment, not a guarantee that all reachable vulnerabilities have been found. Recheck advisories when changing dependencies or publishing a release.
+Reviewed 2026-10-27 against this repository's lockfile and locally built Worker. This is a dated assessment, not a guarantee that all reachable vulnerabilities have been found. Recheck advisories when changing dependencies or publishing a release.
 
 ## Applied updates
 
@@ -8,7 +8,7 @@ Reviewed 2026-10-03 against this repository's lockfile and locally built Worker.
 | --- | --- | --- | --- |
 | React, React DOM, react-server-dom-webpack | 19.2.6 | 19.2.8 | Installed peers and rebuilt RSC implementation report 19.2.8. |
 | @vitejs/plugin-rsc | 0.5.26 | 0.5.29 | Its vendored RSC also reports 19.2.8, avoiding an old fallback implementation. |
-| Next and eslint-config-next | 16.2.6 | 16.3.8 | Same-major compatibility update; typecheck and build pass. |
+| Next and eslint-config-next | 16.3.8 | 16.4.3 | Same-major security patch; typecheck, lint, build, and application tests pass. |
 | pdfjs-dist | 5.7.284 | 6.2.108 | Loading cleanup uses the v6 loading task's `destroy()`; browser upload/page counting passes. |
 | Vite | 8.0.13 | 8.0.16 | Patch update; build and local preview pass. |
 
@@ -18,12 +18,12 @@ EmbedPDF remains pinned at 2.14.4 with Markroom's UTC annotation-date patch. Vin
 
 - **React Server Components:** the server bundle contains RSC request decoding. Declaring RSC as a development dependency does not make it build-only. Both the installed and vendored implementations were patched for [GHSA-wx67-qw84-cm4g](https://github.com/react/react/security/advisories/GHSA-wx67-qw84-cm4g).
 - **PDF.js:** Markroom uses core document loading to count pages, without the PDF.js viewer scripting manager. The scripting preconditions of [GHSA-hq66-cqwq-w95j](https://github.com/mozilla/pdf.js/security/advisories/GHSA-hq66-cqwq-w95j) were not demonstrated here; the package was still updated to the patched release. Browser upload verifies the worker path, not just Node parsing.
-- **Next:** application imports resolve through vinext shims. The inspected Worker has no `node_modules/next/` regions or user-controlled `next/og` endpoint. The compatibility package and lint companion were nevertheless updated. The former critical [next/og finding](https://github.com/vercel/next.js/security/advisories/GHSA-vcvr-r3jv-pc5j) was not evidence of an exploitable Markroom route.
+- **Next:** application imports resolve through vinext shims. The inspected Worker has no `node_modules/next/` regions, user-controlled `next/og` endpoint, enabled Cache Components, `use cache` functions, or registered Server Actions. Generic RSC request decoding is still present. Next and its lint companion were updated to 16.4.3 for [GHSA-2464-fhr4-w9xw](https://github.com/advisories/GHSA-2464-fhr4-w9xw), [GHSA-673q-mjm6-r5xr](https://github.com/advisories/GHSA-673q-mjm6-r5xr), and [GHSA-p3m5-59mp-jv5r](https://github.com/advisories/GHSA-p3m5-59mp-jv5r), even though no corresponding Markroom exploit path was established.
 - **Vite:** the patched [Windows development-server issue](https://github.com/vitejs/vite/security/advisories/GHSA-fx2h-pf6j-xcff) concerns contributors' tooling, rather than the deployed Worker.
 
 ## Remaining findings
 
-The [recorded npm audit](npm-audit-2026-10-03.json) contains **28 affected package entries: 21 high, 6 moderate, 1 low, and no critical**. The previous install had 33 affected entries, including one critical. Counts include inherited findings; they are not counts of distinct demonstrated application vulnerabilities.
+The 2026-10-27 `npm audit` contains **26 affected package entries: 19 high, 6 moderate, 1 low, and no critical**. Before the Next 16.4.3 update it contained 27 entries, including one critical. Counts include inherited findings; they are not counts of distinct demonstrated application vulnerabilities. The older [2026-10-03 audit snapshot](npm-audit-2026-10-03.json) remains as historical evidence and does not describe the current lockfile.
 
 | Dependency path | Inspected use and limit | Follow-up |
 | --- | --- | --- |

@@ -26,6 +26,7 @@ import type {
 } from "../../lib/embed-annotation-types";
 import type { ReviewSnapshot } from "../../lib/review-types";
 import { validateEmbedTransfer } from "../../lib/embed-validation";
+import { resolveOwnerCandidate } from "../../lib/owner-capability";
 
 const viewerLoaderUrl = "/lib/embedpdf/markroom-loader.js";
 const unsupportedAnnotationTypes = new Set([13, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]);
@@ -724,23 +725,40 @@ export function EmbedReviewRoom({ reviewId }: { reviewId: string }) {
   }
 
   useEffect(() => {
+    let active = true;
     const fragment = new URLSearchParams(window.location.hash.slice(1));
+    const hasFragmentOwnerToken = fragment.has("owner");
     const fragmentOwnerToken = fragment.get("owner");
-    if (fragmentOwnerToken) {
-      localStorage.setItem(`markroom:owner:${reviewId}`, fragmentOwnerToken);
-      window.history.replaceState(
-        null,
-        "",
-        window.location.pathname + window.location.search,
-      );
-    }
-    queueMicrotask(() => {
-      setOwnerToken(
-        fragmentOwnerToken || localStorage.getItem(`markroom:owner:${reviewId}`),
-      );
-      setParticipantToken(localStorage.getItem(`markroom:participant:${reviewId}`));
+    const ownerKey = `markroom:owner:${reviewId}`;
+    const storedOwnerToken = localStorage.getItem(ownerKey);
+    const storedParticipantToken = localStorage.getItem(`markroom:participant:${reviewId}`);
+    void resolveOwnerCandidate(fragmentOwnerToken, storedOwnerToken, async (candidate) => {
+      const response = await fetch(`/api/reviews/${reviewId}/embed-annotations`, {
+        cache: "no-store",
+        headers: { "x-markroom-owner-token": candidate },
+      });
+      return (await parseJson<EmbedAnnotationSnapshot>(response)).isOwner;
+    }).then((resolution) => {
+      if (!active) return;
+      if (hasFragmentOwnerToken) {
+        if (resolution.acceptedFragment && resolution.token) {
+          localStorage.setItem(ownerKey, resolution.token);
+        } else if (fragmentOwnerToken) {
+          setActionError("That owner link is not valid for this review. Any saved owner access was kept.");
+        }
+        window.history.replaceState(
+          null,
+          "",
+          window.location.pathname + window.location.search,
+        );
+      }
+      setOwnerToken(resolution.token);
+      setParticipantToken(storedParticipantToken);
       setIdentityReady(true);
+    }).catch((error: unknown) => {
+      if (active) setFatalError(errorMessage(error));
     });
+    return () => { active = false; };
   }, [reviewId]);
 
   useEffect(() => {

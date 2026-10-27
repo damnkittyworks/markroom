@@ -30,4 +30,14 @@ test("distributes full notices for embedded helpers, CSS, and the bundler runtim
   assert.match(helper.licenseReference, /not the embedded helper version/);
   assert.match(provenance.auditedViewer.sha256, /^[a-f0-9]{64}$/);
   assert.match(provenance.limitation, /completeness.*has not been independently established/);
+  assert.ok(provenance.modifications.some((item) => /outline URI bookmarks/.test(item)));
+
+  const viewer = await readFile(new URL(provenance.auditedViewer.asset, destination), "utf8");
+  assert.doesNotMatch(viewer, /window\.open\(n\.uri,"_blank"\)/);
+  assert.match(viewer, /const markroomBookmarkUrl=new URL\(n\.uri\)/);
+  assert.match(viewer, /window\.open\(markroomBookmarkUrl\.href,"_blank","noopener,noreferrer"\)/);
+  assert.match(viewer, /\["https:","http:","mailto:"\]\.includes\(markroomBookmarkUrl\.protocol\)/);
+  const modifications = await readFile(new URL("MODIFICATIONS.txt", destination), "utf8");
+  assert.match(modifications, /outline URI bookmarks/);
+  assert.match(modifications, /noopener,noreferrer/);
 });

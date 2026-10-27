@@ -37,6 +37,16 @@ test('valid portable notes and supported geometry survive; malformed consumed fi
   assert.equal(stripped.annotation.richContent, undefined);
 });
 
+test('unknown fields named after inherited object methods are stripped without throwing', () => {
+  for (const key of ['toString', 'valueOf', '__defineGetter__']) {
+    const transfer = note();
+    transfer.annotation[key] = 'synthetic unknown field';
+    const result = valid(transfer);
+    assert.ok(result, key);
+    assert.equal(Object.hasOwn(result.annotation, key), false, key);
+  }
+});
+
 test('links only permit web/mail and bounded local destinations; reply IDs and kinds are checked', () => {
   const withUri = (uri) => ({ annotation: { ...note().annotation, type: 2, target: { type: 'action', action: { type: 3, uri } } } });
   for (const uri of ['https://example.test/path', 'http://example.test/', 'mailto:reviewer@example.test']) assert.ok(valid(withUri(uri)));
