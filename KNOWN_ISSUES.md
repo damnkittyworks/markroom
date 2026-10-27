@@ -1,10 +1,10 @@
 # Known issues and release boundaries
 
-Updated 2026-10-05. Markroom is an early self-hosted release. These are outstanding limitations, not completed features or promises of a fix date.
+Updated 2026-10-27. Markroom is an early self-hosted release. These are outstanding limitations, not completed features or promises of a fix date.
 
 ## Dependencies and distributed assets
 
-- The recorded npm audit has **28 affected package entries: 21 high, 6 moderate, 1 low, and no critical**. These include inherited/tooling findings and are not 28 distinct demonstrated application exploits. See [the dependency review and reproducible snapshot](docs/dependency-review.md) for the inspected paths and remaining work.
+- The current npm audit has **26 affected package entries: 19 high, 6 moderate, 1 low, and no critical**. These include inherited/tooling findings and are not 26 distinct demonstrated application exploits. See [the dependency review](docs/dependency-review.md) for the inspected paths and remaining work.
 - Official prebuilt releases and public browser deployments are gated on native PDFium attribution. The build preserves the upstream licenses, asset identity, and package inventory, but the npm artifact does not supply an exhaustive native component/build manifest. Obtain the exact native-library/font manifest and required notices before distributing those binaries. This is a provenance gap, not evidence of an incompatible license. See [third-party notices](THIRD_PARTY_NOTICES.md). Generated viewer assets are excluded from the source repository.
 
 ## Collaboration and PDF compatibility

@@ -88,7 +88,7 @@ export function validateEmbedTransfer(value: unknown, options: {
   // are not transferred to the PDF engine. Known fields must have valid shapes.
   const clean: Record<string, JsonValue> = {};
   for (const [key, item] of Object.entries(annotation)) {
-    if (!checks[key]) continue;
+    if (!Object.hasOwn(checks, key)) continue;
     if (!checks[key](item)) return null;
     clean[key] = item as JsonValue;
   }

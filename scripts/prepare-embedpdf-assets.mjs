@@ -56,6 +56,22 @@ const utcPdfDatePatches = [
   },
 ];
 
+// EmbedPDF 2.14.4 opens original-PDF URI outline entries with an opener
+// relationship and without validating the URI scheme. A cross-origin target can
+// then navigate the Markroom tab. Keep internal GoTo bookmarks unchanged, but
+// restrict external URI bookmarks to the same schemes as shared annotations and
+// explicitly sever their opener relationship.
+const outlineUriPatches = [
+  {
+    label: "direct browser outline URI handler",
+    before: 'window.open(n.uri,"_blank")',
+    after:
+      '(()=>{try{if("string"!=typeof n.uri||/[\\u0000-\\u0020\\u007f]/.test(n.uri))return;const markroomBookmarkUrl=new URL(n.uri);if(!["https:","http:","mailto:"].includes(markroomBookmarkUrl.protocol))return;window.open(markroomBookmarkUrl.href,"_blank","noopener,noreferrer")}catch{}})()',
+  },
+];
+
+const viewerPatches = [...utcPdfDatePatches, ...outlineUriPatches];
+
 function occurrences(text, value) {
   return text.split(value).length - 1;
 }
@@ -96,25 +112,25 @@ for (const filename of assets) {
   await cp(path.join(sourceRoot, filename), path.join(destinationRoot, filename));
 }
 
-const appliedPatches = new Map(utcPdfDatePatches.map((patch) => [patch.label, 0]));
+const appliedPatches = new Map(viewerPatches.map((patch) => [patch.label, 0]));
 for (const filename of assets.filter((filename) => filename.endsWith(".js"))) {
   const destination = path.join(destinationRoot, filename);
   const original = await readFile(destination, "utf8");
   let patched = original;
-  for (const patch of utcPdfDatePatches) {
+  for (const patch of viewerPatches) {
     const count = occurrences(patched, patch.before);
     if (count > 0) {
       appliedPatches.set(patch.label, (appliedPatches.get(patch.label) ?? 0) + count);
       patched = patched.replaceAll(patch.before, patch.after);
     }
   }
-  if (patched !== original) await writeFile(destination, "/* Modified by Markroom: append UTC timezone to PDF annotation dates. See MODIFICATIONS.txt. */\n" + patched);
+  if (patched !== original) await writeFile(destination, "/* Modified by Markroom: UTC PDF dates and safe outline URI opening. See MODIFICATIONS.txt. */\n" + patched);
 }
 
-for (const patch of utcPdfDatePatches) {
+for (const patch of viewerPatches) {
   if (appliedPatches.get(patch.label) !== 1) {
     throw new Error(
-      `Expected one ${patch.label} UTC PDF date formatter in EmbedPDF, found ${appliedPatches.get(patch.label)}.`,
+      `Expected one ${patch.label} patch target in EmbedPDF, found ${appliedPatches.get(patch.label)}.`,
     );
   }
 }
@@ -172,12 +188,17 @@ const shippedHash = sha256(await readFile(path.join(destinationRoot, "pdfium.was
 const upstreamHash = sha256(await readFile(path.join(pdfiumPackage, "dist/pdfium.wasm")));
 if (shippedHash !== upstreamHash) throw new Error("Snippet PDFium binary differs from the attributed @embedpdf/pdfium binary.");
 await writeFile(path.join(destinationRoot, "THIRD_PARTY_NOTICES.txt"), noticeSections.join("\n\n========================================\n\n"));
-await writeFile(path.join(destinationRoot, "MODIFICATIONS.txt"), "Markroom modifies the EmbedPDF 2.14.4 direct and worker JavaScript date formatters to append Z (UTC) to exported PDF annotation timestamps. PDFium WASM is unmodified.\n");
+const modifications = [
+  "Append Z (UTC) in the direct and worker JavaScript PDF annotation date formatters.",
+  "Restrict original-PDF outline URI bookmarks to absolute HTTP, HTTPS, and mailto destinations, reject ASCII control/space characters, and open them with noopener,noreferrer.",
+];
+await writeFile(path.join(destinationRoot, "MODIFICATIONS.txt"), `Markroom modifies EmbedPDF 2.14.4:\n- ${modifications.join("\n- ")}\nPDFium WASM is unmodified.\n`);
 await writeFile(path.join(destinationRoot, "PROVENANCE.json"), JSON.stringify({
   snippet: "@embedpdf/snippet@2.14.4",
   pdfium: "@embedpdf/pdfium@2.14.4",
   pdfiumSha256: shippedHash,
   auditedViewer,
+  modifications,
   generatedContributions,
   noticePackages: [...seen].sort(),
   limitation: "Package-supplied notices are preserved. The package does not supply a complete native build/component manifest; completeness of native third-party notices has not been independently established.",

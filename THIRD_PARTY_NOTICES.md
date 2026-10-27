@@ -21,7 +21,7 @@ The generated collection also includes full MIT notices for Babel's embedded reg
 
 The embedded Babel helper has no recoverable version. Its surviving Facebook copyright banner and the audited snippet JavaScript hash identify the code; the Babel 7.29.2 helpers license is a reference text, not a claim that the viewer embeds that version. The preparation script checks the exact viewer hash and banners, plus the installed Tailwind/Rolldown versions and license texts, so upgrades require a fresh notice review.
 
-Markroom modifies the two EmbedPDF JavaScript date formatters to append the UTC timezone marker to PDF annotation timestamps. Modified files carry a banner, and `MODIFICATIONS.txt` describes the patch. The PDFium WASM is unmodified.
+Markroom modifies the two EmbedPDF JavaScript date formatters to append the UTC timezone marker to PDF annotation timestamps. It also restricts original-PDF outline URI bookmarks to safe absolute schemes and opens them without an opener relationship. Modified files carry a banner, and `MODIFICATIONS.txt` describes both patches. The PDFium WASM is unmodified.
 
 ## Remaining provenance limitation
 
